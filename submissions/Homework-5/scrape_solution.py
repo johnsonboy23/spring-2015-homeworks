@@ -1,6 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
+import csv
+
 import os
 import sys
 import time
@@ -84,7 +86,7 @@ def get_hotellist_page(city_url, page_count, city, datadir='data/'):
     """
     url = base_url + city_url
     # Sleep 2 sec before starting a new http request
-    time.sleep(2)
+    # time.sleep(2)
     # Request page
     headers = { 'User-Agent' : user_agent }
     response = requests.get(url, headers=headers)
@@ -95,7 +97,7 @@ def get_hotellist_page(city_url, page_count, city, datadir='data/'):
     return html
 
 
-def parse_hotellist_page(html):
+def parse_hotellist_page(html, page_count):
     """Parses the website with the hotel list and prints the hotel name, the
     number of stars and the number of reviews it has. If there is a next page
     in the hotel list, it returns a list to that page. Otherwise, it exits the
@@ -122,31 +124,146 @@ def parse_hotellist_page(html):
         log.info("#################################### Option 3 ######################################")
         hotel_boxes = soup.findAll('div', {'class' :'listing easyClear  p13n_imperfect'})
 
+    x_train = []
+
     for hotel_box in hotel_boxes:
         hotel_name = hotel_box.find("a", {"target" : "_blank"}).find(text=True)
         log.info("Hotel name: %s" % hotel_name.strip())
 
         stars = hotel_box.find("img", {"class" : "sprite-ratings"})
         if stars:
-            log.info("Stars: %s" % stars['alt'].split()[0])
+            star = stars['alt'].split()[0]
+            log.info("Stars: %s" % star)
 
         num_reviews = hotel_box.find("span", {'class': "more"}).findAll(text=True)
         if num_reviews:
-            log.info("Number of reviews: %s " % [x for x in num_reviews if "review" in x][0].strip())
+            num_rev = [x for x in num_reviews if "review" in x][0].strip()
+            log.info("Number of reviews: %s " % num_rev)
+
+        link = hotel_box.find('a', {'class' : "property_title"})
+        url = base_url + link['href']
+        # Sleep 2 sec before starting a new http request
+        # time.sleep(2)
+        # Request page
+        headers = { 'User-Agent' : user_agent }
+        response = requests.get(url, headers=headers)
+        new_html = response.text.encode('utf-8')
+
+        row_i = parse_detailed_hotel(new_html)
+        row_i.insert(0, float(num_rev.strip("reviews").replace(",", "")))
+        row_i.insert(0, float(star))
+        x_train.append(row_i)
+
+    with open("hotels.csv", "a+") as f:
+        writer = csv.writer(f)
+        writer.writerows(x_train)
 
     # Get next URL page if exists, otherwise exit
-    div = soup.find("div", {"class" : "unified pagination "})
+    div = soup.find("div", {"id" : "pager_bottom"})
     # check if this is the last page
-    if div.find('span', {'class' : 'nav next disabled'}):
-        log.info("We reached last page")
+    pages = soup.find('span', {"class" : "guiArw pageEndNext"})
+    if not pages is None:
+        log.info("We reached last page.")
         sys.exit()
     # If not, return the url to the next page
     hrefs = div.findAll('a', href= True)
     for href in hrefs:
-        if href.find(text = True) == 'Next':
+        next = str(page_count + 1)
+        if href.find(text = True) == next:
             log.info("Next url is %s" % href['href'])
             return href['href']
 
+def parse_detailed_hotel(html):
+    """Parses the website with this specific hotel information and prints the hotel name, the
+    Traveler Rating, See Reviews For option and Rating Summary.
+
+    Parameters
+    ----------
+    html : str
+        The HTML of the website with the given specific hotel.
+
+    Returns
+    -------
+    ret : list[float]
+        list containing the factor of numbers of traveler rating for each level
+
+    """
+    soup = BeautifulSoup(html)
+    # Extract hotel detailed review box
+    review_boxes = soup.find('div', {'class' : 'content wrap trip_type_layout'})
+    # Check availability
+    if review_boxes is None:
+        log.info("No detailed reviews available.")
+        sys.exit()
+
+    # Initial return array
+    ret = []
+
+    rating_box = soup.find('div', {'class' : 'col2of2 composite'})
+    rating_list = rating_box.findAll('div', {'class' : 'wrap row'})
+    log.info("Traveler Rating ------>")
+    for li in rating_list:
+        level = li.find("span", {"class" : "text"}).find(text=True)
+        num_reviews = li.find("span", {'class': "compositeCount"}).find(text=True)
+        # Fill in with date of numbers of reviews
+        ret.append(float(num_reviews.replace(",", "")))
+        log.info("%s: %s" % (level.strip(), num_reviews.strip()))
+
+
+    # type_box = review_boxes.find('div', {'class' : 'trip_type'})
+    type_list = review_boxes.findAll('div', {'class' : 'filter_connection_wrapper'})
+    log.info("Review for Travel Type ------>")
+    for lt in type_list:
+        # num_reviews = lt.find("div", {"class": "value"}).find(text=True)
+        # type_name = lt.find("div", {"class" : " ulBlueLinks"}).find(text=True)
+        li = lt.findAll('div')
+        num_reviews = li[1].find(text=True)
+        ret.append(float(num_reviews.replace(",", "")))
+        type_name = li[0].find(text=True)
+        log.info("%s: %s" % (type_name.strip(), num_reviews.strip()))
+
+    summary_box = soup.find('div', {'id' : 'SUMMARYBOX'})
+    summary_list = summary_box.findAll('li')
+    # if summary_list is None:
+    log.info("Rating Summary ------>")
+    for li in summary_list:
+        summary_name = li.find("div", {"class" : "name"}).find(text=True)
+        stars = li.find("img")
+        star = stars['alt'].split()[0]
+        ret.append(float(star))
+        log.info("%s: %s stars" % (summary_name.strip(), star))
+
+    return ret
+
+def get_detailed_hotel_page(html):
+    """ Get the detailed description html page for each hotel.
+    Then call the parse_detailed_hotel() function to print detailed reviews
+
+    Parameters
+    ----------
+    html: str
+        The HTML of the website with the hotel list.
+
+    Returns
+    -------
+    None: None
+
+    """
+    soup = BeautifulSoup(html)
+    hrefs = soup.findAll('a', {'class' : "property_title"})
+    for href in hrefs:
+        log.info("Follwing with detailed review for this hotel")
+        url = base_url + href['href']
+        # Sleep 2 sec before starting a new http request
+        # time.sleep(2)
+        # Request page
+        headers = { 'User-Agent' : user_agent }
+        response = requests.get(url, headers=headers)
+        html = response.text.encode('utf-8')
+        # Save the webpage
+        # with open(os.path.join(datadir, city + '-hotelist-' + str(page_count) + '.html'), "w") as h:
+        #     h.write(html)
+        parse_detailed_hotel(html)
 
 def scrape_hotels(city, state, datadir='data/'):
     """Runs the main scraper code
@@ -175,7 +292,7 @@ def scrape_hotels(city, state, datadir='data/'):
     while(True):
         c += 1
         html = get_hotellist_page(city_url, c, city, datadir)
-        city_url = parse_hotellist_page(html)
+        city_url = parse_hotellist_page(html, c)
 
 
 if __name__ == "__main__":
